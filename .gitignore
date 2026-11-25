@@ -1,0 +1,6 @@
+/simtest
+*.out
+coverage.*
+*.trace
+*.history
+!internal/domain/testdata/**
