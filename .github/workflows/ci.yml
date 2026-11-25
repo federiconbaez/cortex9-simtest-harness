@@ -42,7 +42,12 @@ jobs:
       - name: planted bug sweep
         run: |
           go run ./cmd/simtest -sut kv -seed 1 -seeds 1000
-          ! go run ./cmd/simtest -sut kv-lazy -seed 1 -seeds 1000 | tee -a "$GITHUB_STEP_SUMMARY"
+          set +e
+          go run ./cmd/simtest -sut kv-lazy -seed 1 -seeds 1000 > lazy.txt
+          code=$?
+          set -e
+          cat lazy.txt | tee -a "$GITHUB_STEP_SUMMARY"
+          test "$code" -eq 1 # the planted bug must be found
       - name: gitleaks
         run: |
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz | tar xz gitleaks
