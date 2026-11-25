@@ -1,0 +1,58 @@
+version: "2"
+linters:
+  default: standard
+  enable:
+    - depguard
+    - errorlint
+    - gosec
+    - revive
+  settings:
+    depguard:
+      rules:
+        domain-pure:
+          files:
+            - "**/internal/domain/*.go"
+            - "!$test"
+          list-mode: strict
+          allow:
+            - $gostd
+          deny:
+            - pkg: os
+              desc: domain must not do I/O
+            - pkg: io
+              desc: domain must not do I/O
+            - pkg: net
+              desc: no network in the simulation core
+            - pkg: time
+              desc: only the virtual clock exists in the domain
+            - pkg: math/rand
+              desc: use the seeded domain.Rand
+            - pkg: sync
+              desc: the simulation core is single-threaded
+            - pkg: github.com/federiconbaez/cortex9-simtest-harness/internal
+              desc: domain must not depend on other layers
+        app-no-adapters:
+          files:
+            - "**/internal/app/*.go"
+            - "!$test"
+          deny:
+            - pkg: github.com/federiconbaez/cortex9-simtest-harness/internal/adapters
+              desc: application depends on ports, not adapters
+            - pkg: os
+              desc: application does no I/O directly
+            - pkg: time
+              desc: only virtual time
+    gosec:
+      excludes:
+        - G115 # integer conversions between tick/seed types are intentional and range-checked
+    staticcheck:
+      checks: ["all", "-ST1000", "-ST1003"]
+    revive:
+      rules:
+        - name: exported
+  exclusions:
+    presets:
+      - std-error-handling
+formatters:
+  enable:
+    - gofmt
