@@ -20,6 +20,8 @@ historia de operaciones con un checker de linealizabilidad.
   con drop, duplicado, delay y reorden; crash/restart de nodos.
 - `FaultPlan`: plan de fallos explícito (`-faults "drop=50,..."`) o
   derivado de la semilla; siempre imprimible en forma canónica.
+- Particiones opt-in (CX9-6207, ADR 0003): un nodo aislado del resto durante
+  `partition-len`. Se activan solo con `partition>0` en un plan explícito.
 - Puertos del SUT: `Process` (nodo), `Client`, `Env`, `Storage`, `SUT`.
 - SUT de referencia: KV replicado primary-backup (`kv`) y una variante
   con bug plantado (`kv-lazy`).
@@ -37,7 +39,8 @@ historia de operaciones con un checker de linealizabilidad.
   repositorio separado que este no modifica ni copia).
 - El KV de referencia no tiene elección de líder ni failover: es un
   SUT de juguete para ejercitar el harness, no una base de datos.
-- No hay particiones de red ni discos con escrituras rotas (*torn writes*).
+- No hay particiones mayoría/minoría ni asimétricas (solo un nodo contra el
+  resto), ni discos con escrituras rotas (*torn writes*).
 
 ## 4. Invariantes
 
@@ -60,6 +63,10 @@ historia de operaciones con un checker de linealizabilidad.
 - **I9 Pureza:** `internal/domain` no importa I/O (`os`, `io`, `net`),
   ni `time`, `math/rand`, `sync`, ni otras capas; no usa `go`.
   Lo hacen cumplir depguard y `internal/archtest`.
+- **I10 Particiones:** con un nodo aislado, ningún mensaje entre ese nodo y
+  otro se entrega mientras dure el corte (los que estaban en vuelo se
+  pierden). Hay como mucho una partición a la vez. Con `partition=0` no se
+  consume azar: las trazas sin particiones no cambian.
 
 ## 5. Puertos
 
@@ -87,6 +94,9 @@ error de uso/configuración.
 3. El harness encuentra el bug plantado de `kv-lazy` en un rango de
    semillas medido y no reporta falsos positivos sobre `kv` en el mismo
    rango; los números van al README.
-4. Fuzz de `ParseTrace`, `ParseHistory` y `ParseFaultPlan` (round-trip).
+4. Fuzz de `ParseTrace`, `ParseHistory` y `ParseFaultPlan` (round-trip),
+   incluidas las claves de partición.
 5. Gates: gofmt, vet, staticcheck, golangci-lint (con depguard),
    `go test -race`, cobertura de dominio (número real), gitleaks. CI verde.
+6. Propiedad I10 sobre trazas y barrido del `kv` correcto con particiones +
+   crashes en CI (0 fallos).

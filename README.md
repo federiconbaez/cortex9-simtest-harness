@@ -9,9 +9,10 @@ con una línea de comando. Al final, un checker de linealizabilidad
 decide si la historia de operaciones que vieron los clientes es válida.
 
 Proyecto de estudio, Apache-2.0, Go 1.24+, solo biblioteca estándar.
-Ref: CX9-6201. Contrato: [CONTRACT.md](CONTRACT.md). Decisiones:
+Ref: CX9-6201, CX9-6207. Contrato: [CONTRACT.md](CONTRACT.md). Decisiones:
 [ADR 0001](docs/adr/0001-event-loop-single-thread.md),
-[ADR 0002](docs/adr/0002-checker-wgl-por-clave.md).
+[ADR 0002](docs/adr/0002-checker-wgl-por-clave.md),
+[ADR 0003](docs/adr/0003-particiones-opt-in.md).
 
 ## Qué hace
 
@@ -25,6 +26,10 @@ Ref: CX9-6201. Contrato: [CONTRACT.md](CONTRACT.md). Decisiones:
 - **Plan de fallos** reproducible: derivado de la semilla o explícito,
   por ejemplo
   `-faults 'delay=1-14,drop=26,dup=69,reorder=3,crash=77,crash-every=95,restart=15-62'`.
+- **Particiones de red** (opt-in, ADR 0003): `partition=300,partition-every=60,partition-len=20-120`
+  aísla a un nodo del resto durante un rato. Se pierden también los mensajes que estaban en
+  vuelo cuando llegarían durante el corte. Con `partition=0` (o sin la clave) no se consume azar
+  y las semillas existentes reproducen lo mismo que antes.
 - **SUT de referencia (`internal/adapters/kv`)**: KV primary-backup con
   primario fijo `n0`, persistencia atómica de valor + secuencia del
   cliente (dedupe de reintentos) y replicación con reintentos.
@@ -45,7 +50,9 @@ Ref: CX9-6201. Contrato: [CONTRACT.md](CONTRACT.md). Decisiones:
   mío, `cortex9-dst`; este no lo modifica ni reutiliza su código.
 - El KV no tiene elección de líder ni failover; los backups no sirven
   lecturas. Es un SUT de juguete para ejercitar el harness.
-- No hay particiones de red ni discos con escrituras rotas.
+- Las particiones son solo "un nodo contra el resto": no hay particiones mayoría/minoría con
+  varios nodos de cada lado, ni asimétricas. Tampoco hay discos con escrituras rotas.
+- El plan derivado de la semilla no incluye particiones; hay que pedirlas con `-faults`.
 - El modelo del checker es un KV de registros; otro SUT necesita otro modelo.
 
 ## Uso
@@ -55,7 +62,11 @@ go run ./cmd/simtest -sut kv-lazy -seed 12                 # una corrida
 go run ./cmd/simtest -sut kv-lazy -seed 1 -seeds 1000      # barrido
 go run ./cmd/simtest -sut kv-lazy -seed 12 -trace t.trace -history h.history
 go run ./cmd/simtest -check-history h.history              # solo checker
+go run ./cmd/simtest -sut kv -seed 1 -seeds 1000 \
+  -faults 'delay=1-9,drop=50,dup=50,reorder=100,reorder-extra=20,crash=80,crash-every=80,restart=15-60,max-crashed=1,partition=300,partition-every=60,partition-len=20-120'
 ```
+
+Con particiones, la salida agrega una línea `partitions=N lost-to-partition=M`.
 
 Salida real de la primera línea:
 
@@ -79,11 +90,14 @@ configuración por defecto (3 servidores, 3 clientes, 12 ops por cliente,
 | `kv-lazy`, semillas 1001–2000 | 65 fallan (6,5 %) |
 | `kv` correcto, semillas 1–1000 | 0 fallos |
 | `kv` correcto, plan duro explícito, semillas 1–200 | 0 fallos |
+| `kv` correcto, particiones + crashes (plan de arriba), semillas 1–1000 | 0 fallos |
+| `kv-lazy`, mismo plan con particiones + crashes, 1–1000 | 143 fallan; sin la parte de particiones, 146 |
+| `kv-lazy`, solo particiones (sin crashes), 1–1000 | 0 fallos: el bug necesita un crash |
 | Barrido de 1000 semillas | ~1,3 s de reloj |
 | Checker vs. fuerza bruta | coinciden en 3000 historias aleatorias por corrida de test (~1/3 linealizables) |
-| Cobertura de `internal/domain` | 98,7 % de sentencias |
-| Fuzz local, 25 s por target | `ParseTrace` 7,56 M, `ParseHistory` 9,30 M, `ParseFaultPlan` 8,87 M ejecuciones, 0 fallos |
-| Tests | 35 funciones `Test` + 3 `Fuzz` (8 semillas de corpus) |
+| Cobertura de `internal/domain` | 98,8 % de sentencias |
+| Fuzz local, 20 s por target | `ParseTrace` 6,23 M, `ParseHistory` 6,81 M, `ParseFaultPlan` 6,34 M ejecuciones, 0 fallos |
+| Tests | 42 funciones `Test` + 3 `Fuzz` (10 semillas de corpus) |
 
 Con ~7 % de semillas que fallan, en promedio hacen falta unas 14
 semillas para dar con el bug; en este rango apareció en la 12. El bug
@@ -99,6 +113,11 @@ confirmado y el siguiente volcado.
 - Los timers de una encarnación anterior no se disparan tras un restart;
   el `Storage` sobrevive al crash.
 - La historia de un fallo se puede guardar, parsear y vuelve a fallar.
+- Particiones: ninguna entrega cruza un corte activo (propiedad sobre 200 semillas que reconstruye
+  el corte desde la traza), hay como mucho una partición a la vez, después del `heal` el
+  tráfico vuelve, las corridas con particiones son deterministas y la traza con
+  `isolate`/`heal` se parsea igual. Comprobé que la propiedad falla si se saca el chequeo del
+  corte o se invierte su condición.
 - Regla de dependencias: depguard + `internal/archtest`, que parsea el
   código y rechaza imports fuera de la lista blanca, `go`, `select` y
   canales en el dominio.
@@ -107,7 +126,8 @@ confirmado y el siguiente volcado.
 
 `gofmt`, `go vet`, `staticcheck`, `golangci-lint` (depguard, gosec,
 errorlint, revive), `go test -race`, cobertura del dominio, fuzz corto,
-barrido del bug plantado y `gitleaks`, todo en GitHub Actions.
+barrido del bug plantado, barrido del `kv` correcto con particiones + crashes y `gitleaks`, todo en
+GitHub Actions.
 
 ## Estructura
 
@@ -140,8 +160,10 @@ internal/archtest        regla de dependencias como test
    harness lo encuentra en ~7 % de las semillas y nunca marca la versión
    correcta en 1200 corridas. Puedo mostrar la línea de repro.
 6. **Límites honestos**: no hay shrinking ni failover, y no reemplaza a
-   `-race`. El siguiente paso sería minimizar el plan de fallos de una
-   semilla que falla.
+   `-race`. Las particiones existen, pero no encuentran más veces este bug
+   en particular (lo medí). El siguiente paso sería minimizar el plan de
+   fallos de una semilla que falla y sumar un SUT con failover, donde las
+   particiones sí importan.
 
 ## Licencia
 

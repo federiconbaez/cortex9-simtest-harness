@@ -41,6 +41,8 @@ func FuzzParseFaultPlan(f *testing.F) {
 	f.Add(RandomFaultPlan(NewRand(1)).String())
 	f.Add("none")
 	f.Add("drop=10,delay=1-3")
+	f.Add("partition=300,partition-every=50,partition-len=5-40")
+	f.Add("partition=0,partition-every=9")
 	f.Fuzz(func(t *testing.T, in string) {
 		p, err := ParseFaultPlan(in)
 		if err != nil {

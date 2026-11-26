@@ -19,6 +19,14 @@ type FaultPlan struct {
 	RestartMin         Duration // minimum downtime after a crash
 	RestartMax         Duration // maximum downtime after a crash
 	MaxCrashed         int      // maximum number of nodes down at once
+
+	// Partitions are opt-in: with Partition == 0 the other partition fields
+	// are zero and no randomness is consumed, so seed-derived plans and
+	// their traces are unchanged.
+	Partition      int      // per-mille chance, per partition tick, of isolating one node
+	PartitionEvery Duration // partition tick period
+	PartitionMin   Duration // minimum partition length
+	PartitionMax   Duration // maximum partition length
 }
 
 // NoFaults is a reliable FIFO network with one tick of latency and no crashes.
@@ -51,7 +59,7 @@ func (p FaultPlan) Validate() error {
 	probs := []struct {
 		name string
 		v    int
-	}{{"drop", p.Drop}, {"dup", p.Dup}, {"reorder", p.Reorder}, {"crash", p.Crash}}
+	}{{"drop", p.Drop}, {"dup", p.Dup}, {"reorder", p.Reorder}, {"crash", p.Crash}, {"partition", p.Partition}}
 	for _, pr := range probs {
 		if pr.v < 0 || pr.v > 1000 {
 			return bad("%s=%d outside 0..1000", pr.name, pr.v)
@@ -71,13 +79,31 @@ func (p FaultPlan) Validate() error {
 	case p.MaxCrashed < 0:
 		return bad("max-crashed must be >= 0")
 	}
+	if p.Partition == 0 {
+		if p.PartitionEvery != 0 || p.PartitionMin != 0 || p.PartitionMax != 0 {
+			return bad("partition-every/partition-len require partition > 0")
+		}
+		return nil
+	}
+	switch {
+	case p.PartitionEvery < 1:
+		return bad("partition-every must be >= 1")
+	case p.PartitionMin < 1 || p.PartitionMax < p.PartitionMin:
+		return bad("partition-len range invalid")
+	}
 	return nil
 }
 
-// String renders the canonical spec accepted by ParseFaultPlan.
+// String renders the canonical spec accepted by ParseFaultPlan. Partition
+// keys are printed only when partitions are enabled.
 func (p FaultPlan) String() string {
-	return fmt.Sprintf("delay=%d-%d,drop=%d,dup=%d,reorder=%d,reorder-extra=%d,crash=%d,crash-every=%d,restart=%d-%d,max-crashed=%d",
+	s := fmt.Sprintf("delay=%d-%d,drop=%d,dup=%d,reorder=%d,reorder-extra=%d,crash=%d,crash-every=%d,restart=%d-%d,max-crashed=%d",
 		p.MinDelay, p.MaxDelay, p.Drop, p.Dup, p.Reorder, p.ReorderExtra, p.Crash, p.CrashEvery, p.RestartMin, p.RestartMax, p.MaxCrashed)
+	if p.Partition > 0 {
+		s += fmt.Sprintf(",partition=%d,partition-every=%d,partition-len=%d-%d",
+			p.Partition, p.PartitionEvery, p.PartitionMin, p.PartitionMax)
+	}
+	return s
 }
 
 // ParseFaultPlan parses a comma-separated spec. Missing keys keep the
@@ -97,11 +123,30 @@ func ParseFaultPlan(spec string) (FaultPlan, error) {
 			return FaultPlan{}, err
 		}
 	}
+	if p.Partition == 0 {
+		// Canonical form: a disabled partition carries no parameters.
+		p.PartitionEvery, p.PartitionMin, p.PartitionMax = 0, 0, 0
+	} else {
+		if p.PartitionEvery == 0 {
+			p.PartitionEvery = defaultPartitionEvery
+		}
+		if p.PartitionMin == 0 && p.PartitionMax == 0 {
+			p.PartitionMin, p.PartitionMax = defaultPartitionMin, defaultPartitionMax
+		}
+	}
 	if err := p.Validate(); err != nil {
 		return FaultPlan{}, err
 	}
 	return p, nil
 }
+
+// Defaults applied by ParseFaultPlan when partition > 0 and the period or
+// length are not given.
+const (
+	defaultPartitionEvery Duration = 100
+	defaultPartitionMin   Duration = 20
+	defaultPartitionMax   Duration = 80
+)
 
 func (p *FaultPlan) set(k, v string) error {
 	num := func() (int64, error) {
@@ -124,15 +169,18 @@ func (p *FaultPlan) set(k, v string) error {
 		return lo, hi, nil
 	}
 	switch k {
-	case "delay", "restart":
+	case "delay", "restart", "partition-len":
 		lo, hi, err := rng()
 		if err != nil {
 			return err
 		}
-		if k == "delay" {
+		switch k {
+		case "delay":
 			p.MinDelay, p.MaxDelay = Duration(lo), Duration(hi)
-		} else {
+		case "restart":
 			p.RestartMin, p.RestartMax = Duration(lo), Duration(hi)
+		default:
+			p.PartitionMin, p.PartitionMax = Duration(lo), Duration(hi)
 		}
 		return nil
 	}
@@ -155,6 +203,10 @@ func (p *FaultPlan) set(k, v string) error {
 		p.CrashEvery = Duration(n)
 	case "max-crashed":
 		p.MaxCrashed = int(n)
+	case "partition":
+		p.Partition = int(n)
+	case "partition-every":
+		p.PartitionEvery = Duration(n)
 	default:
 		return fmt.Errorf("%w: unknown fault key %q", ErrParse, k)
 	}
