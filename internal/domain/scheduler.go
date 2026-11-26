@@ -16,6 +16,8 @@ const (
 	evRestart
 	evFaultTick
 	evCall
+	evPartitionTick
+	evHeal
 )
 
 type event struct {
@@ -63,6 +65,7 @@ type Stats struct {
 	Scheduled, Dispatched                           int
 	Sent, Delivered, Dropped, Duplicated, Reordered int
 	LostToCrash, Crashes, Restarts, Timers          int
+	Partitions, LostToPartition                     int
 }
 
 type node struct {
@@ -90,6 +93,7 @@ type Sim struct {
 	cur       uint64
 	started   bool
 	transport Transport
+	isolated  NodeID // node cut off from every other node; "" when healed
 }
 
 // NewSim validates cfg and returns an empty simulation.
@@ -172,6 +176,9 @@ func (s *Sim) Run() error {
 	if s.cfg.Plan.Crash > 0 && s.cfg.Plan.MaxCrashed > 0 {
 		s.push(&event{at: Time(s.cfg.Plan.CrashEvery), kind: evFaultTick})
 	}
+	if s.cfg.Plan.Partition > 0 && len(s.order) > 1 {
+		s.push(&event{at: Time(s.cfg.Plan.PartitionEvery), kind: evPartitionTick})
+	}
 	for s.queue.Len() > 0 {
 		e := heap.Pop(&s.queue).(*event)
 		if e.at > s.cfg.Horizon {
@@ -203,8 +210,16 @@ func (s *Sim) record(kind string, id NodeID, detail string) {
 }
 
 func (s *Sim) dispatch(e *event) {
-	if e.kind == evFaultTick {
+	switch e.kind {
+	case evFaultTick:
 		s.faultTick()
+		return
+	case evPartitionTick:
+		s.partitionTick()
+		return
+	case evHeal:
+		s.record(KindHeal, s.isolated, "")
+		s.isolated = ""
 		return
 	}
 	n := s.nodes[e.node]
@@ -220,6 +235,11 @@ func (s *Sim) dispatch(e *event) {
 		s.record(kind, n.id, fmt.Sprintf("epoch=%d", n.epoch))
 		n.proc.Start(env)
 	case evDeliver:
+		if s.cut(e.msg.From, n.id) {
+			s.stats.LostToPartition++
+			s.record(KindDrop, n.id, fmt.Sprintf("id=%d from=%s partitioned", e.msg.ID, e.msg.From))
+			return
+		}
 		if !n.up {
 			s.stats.LostToCrash++
 			s.record(KindLost, n.id, fmt.Sprintf("id=%d from=%s", e.msg.ID, e.msg.From))
@@ -266,6 +286,29 @@ func (s *Sim) faultTick() {
 		s.push(&event{at: back, kind: evRestart, node: id})
 	}
 	s.push(&event{at: s.clock.Now() + Time(p.CrashEvery), kind: evFaultTick})
+}
+
+// cut reports whether the active partition separates a and b. A message
+// is lost if the cut is active when it would arrive (in-flight messages
+// included), which models a link that is down, not a sender that knows.
+func (s *Sim) cut(a, b NodeID) bool {
+	return s.isolated != "" && (a == s.isolated) != (b == s.isolated)
+}
+
+// partitionTick may isolate one node (chosen uniformly, clients included)
+// from all others for a length drawn from the plan. At most one partition
+// is active at a time.
+func (s *Sim) partitionTick() {
+	p := s.cfg.Plan
+	if s.isolated == "" && s.rng.Chance(p.Partition) {
+		victim := s.order[s.rng.Range(0, int64(len(s.order)-1))]
+		heal := s.clock.Now() + Time(s.rng.Range(int64(p.PartitionMin), int64(p.PartitionMax)))
+		s.isolated = victim
+		s.stats.Partitions++
+		s.record(KindIsolate, victim, fmt.Sprintf("heal-at=%d", heal))
+		s.push(&event{at: heal, kind: evHeal})
+	}
+	s.push(&event{at: s.clock.Now() + Time(p.PartitionEvery), kind: evPartitionTick})
 }
 
 func hashBytes(b []byte) uint64 {

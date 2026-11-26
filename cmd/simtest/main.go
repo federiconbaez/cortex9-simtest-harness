@@ -89,6 +89,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "sut=%s seed=%d plan=%s\n", sys.Name(), r.Seed, r.Plan)
 	fmt.Fprintf(stdout, "events=%d sent=%d dropped=%d dup=%d reordered=%d crashes=%d ops=%d explored=%d digest=%016x\n",
 		st.Dispatched, st.Sent, st.Dropped, st.Duplicated, st.Reordered, st.Crashes, r.Check.Ops, r.Check.Explored, r.Trace.Digest())
+	if r.Plan.Partition > 0 {
+		fmt.Fprintf(stdout, "partitions=%d lost-to-partition=%d\n", st.Partitions, st.LostToPartition)
+	}
 	if r.Failed() {
 		fmt.Fprintf(stdout, "FAIL seed=%d key=%s repro: %s\n", r.Seed, r.Check.Key, r.Repro)
 		return 1

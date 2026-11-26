@@ -19,11 +19,14 @@ const (
 	KindSend    = "send"
 	KindDrop    = "drop"
 	KindNote    = "note"
+	KindIsolate = "isolate"
+	KindHeal    = "heal"
 )
 
 var traceKinds = map[string]bool{
 	KindStart: true, KindRestart: true, KindDeliver: true, KindLost: true, KindTimer: true,
 	KindCrash: true, KindCall: true, KindSend: true, KindDrop: true, KindNote: true,
+	KindIsolate: true, KindHeal: true,
 }
 
 // TraceEvent is one line of the canonical trace. Seq is the scheduler

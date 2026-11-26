@@ -98,3 +98,52 @@ func TestFailingHistoryReplaysFromSeed(t *testing.T) {
 		t.Fatalf("recorded history must round-trip and still fail: %v", err)
 	}
 }
+
+// Partitions (opt-in, CX9-6207): the correct KV stays linearizable while a
+// node is cut off, and the planted bug is still found when partitions are
+// combined with crashes. Partitions alone never expose it: the bug needs
+// the primary to lose its memory, which only a crash does.
+func TestPartitionsKeepTheOracleSound(t *testing.T) {
+	net := "delay=1-9,drop=50,dup=50,reorder=100,reorder-extra=20,partition=300,partition-every=60,partition-len=20-120"
+	withCrashes := net + ",crash=80,crash-every=80,restart=15-60,max-crashed=1"
+	run := func(v kv.Variant, spec string) app.Exploration {
+		t.Helper()
+		p, err := domain.ParseFaultPlan(spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := kvConfig(v)
+		cfg.Plan = &p
+		ex, err := app.Explore(cfg, 1, 200)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ex
+	}
+	if ex := run(kv.Correct, withCrashes); ex.Failures != 0 {
+		t.Fatalf("correct kv flagged under partitions+crashes: %v", ex.FailingSeeds)
+	}
+	if ex := run(kv.LazyFlush, net); ex.Failures != 0 {
+		t.Fatalf("kv-lazy failed without crashes (unexpected): %v", ex.FailingSeeds)
+	}
+	ex := run(kv.LazyFlush, withCrashes)
+	if ex.Failures == 0 {
+		t.Fatal("planted bug not found under partitions+crashes")
+	}
+	partitions := 0
+	for seed := uint64(1); seed <= 20; seed++ {
+		p, _ := domain.ParseFaultPlan(withCrashes)
+		cfg := kvConfig(kv.LazyFlush)
+		cfg.Plan = &p
+		cfg.Seed = seed
+		r, err := app.Run(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		partitions += r.Stats.Partitions
+	}
+	if partitions == 0 {
+		t.Fatal("the plan produced no partitions: the test is vacuous")
+	}
+	t.Logf("kv-lazy with partitions+crashes: %d/%d seeds fail, first=%d", ex.Failures, ex.Runs, ex.First.Seed)
+}

@@ -11,6 +11,7 @@ permissions:
 jobs:
   gates:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,6 +49,11 @@ jobs:
           set -e
           cat lazy.txt | tee -a "$GITHUB_STEP_SUMMARY"
           test "$code" -eq 1 # the planted bug must be found
+      - name: partition sweep (correct kv must stay linearizable)
+        run: |
+          go run ./cmd/simtest -sut kv -seed 1 -seeds 1000 \
+            -faults 'delay=1-9,drop=50,dup=50,reorder=100,reorder-extra=20,crash=80,crash-every=80,restart=15-60,max-crashed=1,partition=300,partition-every=60,partition-len=20-120' \
+            | tee -a "$GITHUB_STEP_SUMMARY"
       - name: gitleaks
         run: |
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz | tar xz gitleaks
